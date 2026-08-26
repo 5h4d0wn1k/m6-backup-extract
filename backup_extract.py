@@ -36,20 +36,20 @@ class ABHeader:
     def from_file(cls, filepath: str) -> "ABHeader":
         header = cls()
         with open(filepath, "rb") as f:
-            magic = f.read(14)
-            if magic != cls.MAGIC:
-                raise ValueError(f"Not an Android Backup file: got magic {magic!r}")
+            first_line = f.readline().rstrip(b"\n")
+            if first_line != cls.MAGIC:
+                raise ValueError(f"Not an Android Backup file: got magic {first_line!r}")
 
-            header.magic = magic
+            header.magic = first_line
             version_line = f.readline().strip()
             header.version = int(version_line)
-            header.compressed_line = f.readline().strip()
-            header.compressed = header.compressed_line == "1"
+            compressed_line = f.readline().strip()
+            header.compressed = compressed_line == b"1"
             schema_line = f.readline().strip()
             header.backup_schema_version = int(schema_line)
 
             checksum_line = f.readline().strip()
-            header.device_checksum = checksum_line
+            header.device_checksum = checksum_line.decode("utf-8", errors="replace")
 
             header._raw_header = f.read(0)
 
@@ -58,10 +58,6 @@ class ABHeader:
     @classmethod
     def from_stream(cls, stream: io.BytesIO) -> "ABHeader":
         header = cls()
-        magic = stream.read(14)
-        if magic != cls.MAGIC:
-            raise ValueError(f"Not an Android Backup file: got magic {magic!r}")
-        header.magic = magic
 
         def read_line() -> bytes:
             line = b""
@@ -71,6 +67,11 @@ class ABHeader:
                     break
                 line += byte
             return line
+
+        first_line = read_line()
+        if first_line != cls.MAGIC:
+            raise ValueError(f"Not an Android Backup file: got magic {first_line!r}")
+        header.magic = first_line
 
         header.version = int(read_line().strip())
         header.compressed = read_line().strip() == b"1"
@@ -98,13 +99,17 @@ class BackupExtractor:
 
     def _read_payload(self, filepath: str) -> bytes:
         with open(filepath, "rb") as f:
-            while True:
-                line = f.readline()
-                if line == b"\n" or line == b"":
-                    break
+            first_line = f.readline().rstrip(b"\n")
+            if first_line != b"Android Backup":
+                raise ValueError("Not an Android Backup file")
+            for _ in range(4):
+                f.readline()
+            f.readline()
             return f.read()
 
     def decompress(self, filepath: str, output_path: Optional[str] = None) -> bytes:
+        if not self.header:
+            self.read_header(filepath)
         payload = self._read_payload(filepath)
         if self.header and self.header.compressed:
             decompressed = zlib.decompress(payload)
@@ -123,9 +128,9 @@ class BackupExtractor:
         tar_stream = io.BytesIO(data)
         extracted = []
 
-        with tarfile.open(fileobj=tar_stream) as tar:
+        with tarfile.open(fileobj=tar_stream, mode="r:tar") as tar:
             for member in tar.getmembers():
-                tar.extract(member, output_dir)
+                tar.extract(member, output_dir, filter="data")
                 extracted.append(member.name)
 
         return extracted
@@ -137,14 +142,14 @@ class BackupExtractor:
         tar_stream = io.BytesIO(data)
         extracted = []
 
-        with tarfile.open(fileobj=tar_stream) as tar:
+        with tarfile.open(fileobj=tar_stream, mode="r:tar") as tar:
             for member in tar.getmembers():
                 if patterns:
                     if any(p in member.name for p in patterns):
-                        tar.extract(member, output_dir)
+                        tar.extract(member, output_dir, filter="data")
                         extracted.append(member.name)
                 else:
-                    tar.extract(member, output_dir)
+                    tar.extract(member, output_dir, filter="data")
                     extracted.append(member.name)
 
         return extracted
@@ -154,7 +159,7 @@ class BackupExtractor:
         tar_stream = io.BytesIO(data)
         contents = []
 
-        with tarfile.open(fileobj=tar_stream) as tar:
+        with tarfile.open(fileobj=tar_stream, mode="r:tar") as tar:
             for member in tar.getmembers():
                 info = {
                     "name": member.name,
@@ -330,7 +335,7 @@ class TarAnalyzer:
         result = {"path": filepath, "files": [], "stats": {}}
 
         try:
-            with tarfile.open(filepath) as tar:
+            with tarfile.open(filepath, mode="r:tar") as tar:
                 all_files = []
                 dirs = 0
                 total_size = 0
