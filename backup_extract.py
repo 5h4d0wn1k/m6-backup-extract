@@ -315,7 +315,7 @@ class TarAnalyzer:
         "files",
         "cache",
         "lib",
-        "app_,
+        "app_",
         "webview",
     ]
 
