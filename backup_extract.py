@@ -14,6 +14,8 @@ import io
 import time
 import hashlib
 import shutil
+import tempfile
+import argparse
 from typing import Dict, List, Optional, Tuple, Any
 from pathlib import Path
 
@@ -517,101 +519,187 @@ def create_sample_ab_file(filepath: str) -> str:
     return filepath
 
 
+def add_report(payload: Dict, output_dir: str, title: str) -> Dict:
+    """Write a JSON report under output_dir and return the path."""
+    os.makedirs(output_dir, exist_ok=True)
+    report_path = os.path.join(output_dir, "report.json")
+    with open(report_path, "w") as f:
+        json.dump(payload, f, indent=2, default=str)
+    report = dict(payload)
+    report["report_path"] = report_path
+    return report
+
+
+def cmd_demo(args):
+    print("=" * 66)
+    print("  M6 - Android Backup Extractor - offline demo")
+    print("=" * 66)
+    tmp = tempfile.mkdtemp(prefix="m6_demo_")
+    ab_path = os.path.join(tmp, "sample.ab")
+    create_sample_ab_file(ab_path)
+
+    workflow = BackupWorkflow(output_dir=os.path.join(args.output_dir, "m6"))
+    header = workflow.extractor.read_header(ab_path)
+    print("  Header           :", header)
+
+    contents = workflow.extractor.list_contents(ab_path)
+    print("  Contents         : %d entries" % len(contents))
+    for item in contents:
+        prefix = "d" if item["type"] == "dir" else "f"
+        print("    %s %s (%d bytes)" % (prefix, item["name"], item["size"]))
+
+    extraction = workflow.extract_backup(ab_path)
+    sensitive = extraction["sensitive_keys"]
+    print("  Shared prefs     : %d file(s)" % len(extraction["prefs_files"]))
+    print("  Sensitive keys   : %s" % json.dumps(sensitive))
+
+    report = add_report({
+        "demo": True,
+        "header": {
+            "version": header.version,
+            "compressed": header.compressed,
+            "schema_version": header.backup_schema_version,
+            "device_checksum": header.device_checksum,
+        },
+        "contents_count": len(contents),
+        "extracted_files": len(extraction["extracted_files"]),
+        "prefs_files": extraction["prefs_files"],
+        "sensitive_keys": sensitive,
+        "input_sha256": hashlib.sha256(
+            open(ab_path, "rb").read()).hexdigest(),
+    }, args.output_dir, "M6 backup demo")
+    shutil.rmtree(tmp, ignore_errors=True)
+    print("  report           : %s" % report["report_path"])
+    print("  exit=0")
+    return 0
+
+
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: backup_extract.py <command> [args]")
-        print("Commands:")
-        print("  info <ab_file>          - Show backup file info")
-        print("  header <ab_file>        - Parse and display header")
-        print("  contents <ab_file>      - List backup contents")
-        print("  extract <ab_file>       - Extract backup to output dir")
-        print("  prefs <ab_file>         - Extract and parse shared_prefs")
-        print("  report <ab_file>        - Generate full analysis report")
-        print("  parse-prefs <xml_file>  - Parse a shared_prefs XML file")
-        print("  create-sample <ab_file> - Create a sample .ab file for testing")
-        return
+    p = argparse.ArgumentParser(
+        prog="backup_extract.py",
+        description="M6 - Android Backup (.ab) parser, extractor and "
+                    "shared-preferences analyzer")
+    sub = p.add_subparsers(dest="cmd")
 
-    cmd = sys.argv[1]
+    sub.add_parser("demo", help="offline demo (exits 0)").set_defaults(
+        func=cmd_demo)
+
+    p_info = sub.add_parser("info", help="show backup file info")
+    p_info.add_argument("ab_file")
+    p_info.set_defaults(func=cmd_info)
+
+    p_header = sub.add_parser("header", help="parse and display header")
+    p_header.add_argument("ab_file")
+    p_header.set_defaults(func=cmd_header)
+
+    p_contents = sub.add_parser("contents", help="list backup contents")
+    p_contents.add_argument("ab_file")
+    p_contents.set_defaults(func=cmd_contents)
+
+    p_extract = sub.add_parser("extract", help="extract backup to output dir")
+    p_extract.add_argument("ab_file")
+    p_extract.set_defaults(func=cmd_extract)
+
+    p_prefs = sub.add_parser("prefs", help="extract and parse shared_prefs")
+    p_prefs.add_argument("ab_file")
+    p_prefs.set_defaults(func=cmd_prefs)
+
+    p_report = sub.add_parser("report", help="generate full analysis report")
+    p_report.add_argument("ab_file")
+    p_report.set_defaults(func=cmd_report)
+
+    p_parse = sub.add_parser("parse-prefs", help="parse a shared_prefs XML file")
+    p_parse.add_argument("xml_file")
+    p_parse.set_defaults(func=cmd_parse_prefs)
+
+    p_create = sub.add_parser("create-sample", help="create a sample .ab file")
+    p_create.add_argument("output_file")
+    p_create.set_defaults(func=cmd_create_sample)
+
+    p.add_argument("-o", "--output-dir", default="reports",
+                   help="directory for reports (default: reports)")
+
+    args = p.parse_args()
+    if not getattr(args, "cmd", None):
+        p.print_help()
+        return 0
+    return args.func(args)
+
+
+def cmd_info(args):
     workflow = BackupWorkflow()
+    print(json.dumps(workflow.extractor.get_info(args.ab_file), indent=2))
+    return 0
 
-    if cmd == "info":
-        if len(sys.argv) < 3:
-            print("Usage: backup_extract.py info <ab_file>")
-            return
-        info = workflow.extractor.get_info(sys.argv[2])
-        print(json.dumps(info, indent=2))
 
-    elif cmd == "header":
-        if len(sys.argv) < 3:
-            print("Usage: backup_extract.py header <ab_file>")
-            return
-        try:
-            header = workflow.extractor.read_header(sys.argv[2])
-            print(header)
-        except ValueError as e:
-            print(f"Error: {e}")
+def cmd_header(args):
+    try:
+        header = BackupExtractor().read_header(args.ab_file)
+        print(header)
+        return 0
+    except ValueError as e:
+        print(f"Error: {e}")
+        return 1
 
-    elif cmd == "contents":
-        if len(sys.argv) < 3:
-            print("Usage: backup_extract.py contents <ab_file>")
-            return
-        try:
-            contents = workflow.extractor.list_contents(sys.argv[2])
-            for item in contents:
-                prefix = "d" if item["type"] == "dir" else "f"
-                print(f"  {prefix} {item['name']} ({item['size']} bytes)")
-        except Exception as e:
-            print(f"Error: {e}")
 
-    elif cmd == "extract":
-        if len(sys.argv) < 3:
-            print("Usage: backup_extract.py extract <ab_file>")
-            return
-        try:
-            extracted = workflow.extractor.extract_tar(sys.argv[2], workflow.output_dir)
-            print(f"Extracted {len(extracted)} files to {workflow.output_dir}")
-        except Exception as e:
-            print(f"Error: {e}")
+def cmd_contents(args):
+    try:
+        contents = BackupExtractor().list_contents(args.ab_file)
+        for item in contents:
+            prefix = "d" if item["type"] == "dir" else "f"
+            print(f"  {prefix} {item['name']} ({item['size']} bytes)")
+        return 0
+    except Exception as e:
+        print(f"Error: {e}")
+        return 1
 
-    elif cmd == "prefs":
-        if len(sys.argv) < 3:
-            print("Usage: backup_extract.py prefs <ab_file>")
-            return
-        try:
-            extraction = workflow.extract_backup(sys.argv[2])
-            print(f"Parsed {len(extraction['prefs_files'])} preference files")
-            print(f"Sensitive keys found: {extraction['sensitive_keys']}")
-            print(json.dumps(extraction["prefs_data"], indent=2))
-        except Exception as e:
-            print(f"Error: {e}")
 
-    elif cmd == "report":
-        if len(sys.argv) < 3:
-            print("Usage: backup_extract.py report <ab_file>")
-            return
-        try:
-            report = workflow.full_report(sys.argv[2])
-            print(f"Report saved to: {report['report_path']}")
-        except Exception as e:
-            print(f"Error: {e}")
+def cmd_extract(args):
+    try:
+        workflow = BackupWorkflow()
+        extracted = workflow.extractor.extract_tar(args.ab_file, workflow.output_dir)
+        print(f"Extracted {len(extracted)} files to {workflow.output_dir}")
+        return 0
+    except Exception as e:
+        print(f"Error: {e}")
+        return 1
 
-    elif cmd == "parse-prefs":
-        if len(sys.argv) < 3:
-            print("Usage: backup_extract.py parse-prefs <xml_file>")
-            return
-        parser = SharedPrefsParser()
-        prefs = parser.parse_file(sys.argv[2])
-        print(json.dumps(prefs, indent=2))
 
-    elif cmd == "create-sample":
-        if len(sys.argv) < 3:
-            print("Usage: backup_extract.py create-sample <output_file>")
-            return
-        path = create_sample_ab_file(sys.argv[2])
-        print(f"Created sample AB file: {path}")
+def cmd_prefs(args):
+    try:
+        workflow = BackupWorkflow()
+        extraction = workflow.extract_backup(args.ab_file)
+        print(f"Parsed {len(extraction['prefs_files'])} preference files")
+        print(f"Sensitive keys found: {json.dumps(extraction['sensitive_keys'])}")
+        print(json.dumps(extraction["prefs_data"], indent=2))
+        return 0
+    except Exception as e:
+        print(f"Error: {e}")
+        return 1
 
-    else:
-        print(f"Unknown command: {cmd}")
+
+def cmd_report(args):
+    try:
+        report = BackupWorkflow(output_dir=os.path.join(args.output_dir, "m6")) \
+            .full_report(args.ab_file)
+        print(f"Report saved to: {report['report_path']}")
+        return 0
+    except Exception as e:
+        print(f"Error: {e}")
+        return 1
+
+
+def cmd_parse_prefs(args):
+    parser = SharedPrefsParser()
+    prefs = parser.parse_file(args.xml_file)
+    print(json.dumps(prefs, indent=2))
+    return 0
+
+
+def cmd_create_sample(args):
+    path = create_sample_ab_file(args.output_file)
+    print(f"Created sample AB file: {path}")
+    return 0
 
 
 if __name__ == "__main__":

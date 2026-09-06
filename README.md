@@ -25,6 +25,9 @@ python3 backup_extract.py --help
 ## Usage
 
 ```bash
+# Offline demo (creates a real .ab, parses, extracts, reports; exits 0)
+python3 backup_extract.py -o reports demo
+
 # Create a sample .ab file for testing
 python3 backup_extract.py create-sample test.ab
 
@@ -43,12 +46,47 @@ python3 backup_extract.py extract test.ab
 # Extract and parse shared preferences
 python3 backup_extract.py prefs test.ab
 
-# Generate full analysis report
-python3 backup_extract.py report test.ab
+# Generate full analysis report (JSON under reports/)
+python3 backup_extract.py -o reports report test.ab
 
 # Parse a standalone shared_prefs XML file
 python3 backup_extract.py parse-prefs user_prefs.xml
 ```
+
+## Tests
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+17 stdlib unittest cases covering header parsing, zlib+tar round-trips,
+selective extraction, shared-prefs XML type mapping, sensitive-key scanning,
+tar analysis, the full workflow report, and CLI exit codes.
+
+## Live Lab Test Plan
+
+1. In an offline lab, run `python3 backup_extract.py -o reports demo` against a
+   **backup you made yourself** of your own device with `adb backup` (or use
+   the built-in sample). Confirm it prints the header, contents, and sensitive
+   keys, then exits 0.
+2. `create-sample` then `contents`/`report` to verify the full pipeline.
+3. Only ever extract or parse `.ab` files you created or that you have explicit
+   written authorization to analyze. Never scan backups belonging to others.
+
+## Metrics
+
+- Format support: Android Backup `.ab` (v1, compressed and uncompressed),
+  zlib payloads, tar archives, shared_preferences XML.
+- Engine: `ABHeader`, `BackupExtractor`, `SharedPrefsParser`, `TarAnalyzer`,
+  `BackupWorkflow`.
+- Sensitive-key scan: token/password/secret/key/auth/credential/login/user
+  patterns across parsed prefs.
+- Report: JSON to `reports/` (gitignored), full workflow report with contents
+  + extraction + sensitive keys.
+- Test count: 17 stdlib unittest cases (see `tests/`).
+- Dependencies: Python 3 stdlib only (`tarfile`, `zlib`, `xml.etree`,
+  `struct`, `json`).
+- Offline demo: creates a real compressed `.ab`, round-trips it, exits 0.
 
 ## Example Output
 

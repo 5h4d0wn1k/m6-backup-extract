@@ -1,3 +1,6 @@
 __pycache__/
 *.pyc
 *.pyo
+.DS_Store
+reports/
+backup_output/
